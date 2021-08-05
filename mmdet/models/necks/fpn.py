@@ -17,18 +17,27 @@ class FPN(BaseModule):
 
     Args:
         in_channels (List[int]): Number of input channels per scale.
+        in_channels (List[int]): 输入的不同尺寸下的特征图的通道数量
+
         out_channels (int): Number of output channels (used at each scale)
+        out_channels (int): 最终输出的特征图s的通道数，所有输出的特征图都是同一个输出通道数
+
         num_outs (int): Number of output scales.
+        num_outs (int): 输出的特征图的数量
+
         start_level (int): Index of the start input backbone level used to
             build the feature pyramid. Default: 0.
+        start_level (int): 从backbone给出的inputs列表中的第几位开始计算。默认为0
+
         end_level (int): Index of the end input backbone level (exclusive) to
             build the feature pyramid. Default: -1, which means the last level.
+        end_level (int): 从backbone给出的inputs列表中的第几位开始结束计算。默认为-1
+
         add_extra_convs (bool | str): If bool, it decides whether to add conv
             layers on top of the original feature maps. Default to False.
             If True, its actual mode is specified by `extra_convs_on_inputs`.
             If str, it specifies the source feature map of the extra convs.
             Only the following options are allowed
-
             - 'on_input': Last feat map of neck inputs (i.e. backbone feature).
             - 'on_lateral':  Last feature map after lateral convs.
             - 'on_output': The last output feature map after fpn convs.
@@ -121,18 +130,20 @@ class FPN(BaseModule):
         self.fpn_convs = nn.ModuleList()
 
         for i in range(self.start_level, self.backbone_end_level):
+            # 对lateral层进行1*1的卷积，统一通道数。 是否使用norm可以设置
             l_conv = ConvModule(
                 in_channels[i],
                 out_channels,
-                1,
-                conv_cfg=conv_cfg,
+                1, # kernel_size
+                conv_cfg=conv_cfg, #
                 norm_cfg=norm_cfg if not self.no_norm_on_lateral else None,
                 act_cfg=act_cfg,
                 inplace=False)
+            # 对逐像素相加后的fpn特征图进行3*3的卷积，通道数不变
             fpn_conv = ConvModule(
                 out_channels,
                 out_channels,
-                3,
+                3, # kernel_size
                 padding=1,
                 conv_cfg=conv_cfg,
                 norm_cfg=norm_cfg,
@@ -143,13 +154,15 @@ class FPN(BaseModule):
             self.fpn_convs.append(fpn_conv)
 
         # add extra conv layers (e.g., RetinaNet)
-        extra_levels = num_outs - self.backbone_end_level + self.start_level
+        # 添加额外的卷积层
+        extra_levels = num_outs - (self.backbone_end_level - self.start_level)
         if self.add_extra_convs and extra_levels >= 1:
             for i in range(extra_levels):
                 if i == 0 and self.add_extra_convs == 'on_input':
                     in_channels = self.in_channels[self.backbone_end_level - 1]
                 else:
                     in_channels = out_channels
+                # 1/2的下采样
                 extra_fpn_conv = ConvModule(
                     in_channels,
                     out_channels,
@@ -160,56 +173,99 @@ class FPN(BaseModule):
                     norm_cfg=norm_cfg,
                     act_cfg=act_cfg,
                     inplace=False)
+                # 加到了fpn的卷积层中
                 self.fpn_convs.append(extra_fpn_conv)
 
-    @auto_fp16()
+    @auto_fp16()  # 自动精度切换
     def forward(self, inputs):
         """Forward function."""
+        # 判定输入的特征图数量与限定的输入通道列表的元素数量一致
         assert len(inputs) == len(self.in_channels)
 
-        # build laterals
+        # -------------------------------------- build laterals --------------------------------------
+        # 创建横向连接， 每一个元素都是自底向上的横向连接的特征图。
+        # 输入是原始C2,C3...的原始特征图，通道数也各异
+        # 输出是L2，L3....，属于横向连接的特征图，通道数统一为d. 论文中为d=256
         laterals = [
             lateral_conv(inputs[i + self.start_level])
             for i, lateral_conv in enumerate(self.lateral_convs)
         ]
 
-        # build top-down path
+        # --------------------------------------  build top-down path --------------------------------------
+        # 创建自顶向下的连接
+        """
+        F.interpolate的用法为：
+            def interpolate(
+                input: Tensor,
+                size: Optional[int] = None,
+                scale_factor: Optional[List[float]] = None,
+
+                mode: str = 'nearest',
+                align_corners: Optional[bool] = None,
+                recompute_scale_factor: Optional[bool] = None
+            ) -> Tensor:
+        其中size和scale_factor不共存，一个代表插值后的尺寸，一个代表缩放的比例，二者取一
+        """
         used_backbone_levels = len(laterals)
         for i in range(used_backbone_levels - 1, 0, -1):
             # In some cases, fixing `scale factor` (e.g. 2) is preferred, but
             #  it cannot co-exist with `size` in `F.interpolate`.
-            if 'scale_factor' in self.upsample_cfg:
-                laterals[i - 1] += F.interpolate(laterals[i],
-                                                 **self.upsample_cfg)
-            else:
-                prev_shape = laterals[i - 1].shape[2:]
-                laterals[i - 1] += F.interpolate(
-                    laterals[i], size=prev_shape, **self.upsample_cfg)
+            # 如果限定了缩放比例，就直接使用
+            # 如果没有限定，就先取出低一层的特征图的尺寸
 
-        # build outputs
+            # 直接在横向连接的特征图list中倒着向下扩大2倍，并逐像素相加
+            if 'scale_factor' in self.upsample_cfg:
+                laterals[i - 1] += F.interpolate(
+                    laterals[i],
+                    **self.upsample_cfg
+                )
+            else:
+                prev_shape = laterals[i - 1].shape[2:]  # 取出低一层的特征图H和W
+                laterals[i - 1] += F.interpolate(
+                    laterals[i],
+                    size=prev_shape,
+                    **self.upsample_cfg
+                )
+
+        # -------------------------------------- build outputs --------------------------------------
         # part 1: from original levels
+        # 使用3*3进行融合特征的平滑，通道数保持不变
         outs = [
             self.fpn_convs[i](laterals[i]) for i in range(used_backbone_levels)
         ]
         # part 2: add extra levels
+        # 如果要求的输出特征图数量超过了横向连接的数量，那么要在输出特征图list中继续补充
+        """
+        补充的方式有两种：
+            1. 如果没有指定 "add_extra_convs"， 那就使用最大池化，卷积核尺寸为1，步长为2.  （为什么卷积核尺寸为1   ？？？？）
+            2. 如果制定了 "add_extra_convs", 判断是哪种类型：
+                （1）如果为"on_input",
+                （2）如果为"on_lateral"
+                （3）如果为"on_output"
+        """
         if self.num_outs > len(outs):
             # use max pool to get more levels on top of outputs
             # (e.g., Faster R-CNN, Mask R-CNN)
+            # 第一种： 使用max pool进行更高层级的信息提取  (e.g., Faster R-CNN, Mask R-CNN)
             if not self.add_extra_convs:
                 for i in range(self.num_outs - used_backbone_levels):
                     outs.append(F.max_pool2d(outs[-1], 1, stride=2))
             # add conv layers on top of original feature maps (RetinaNet)
+            # 第二种： 使用卷积层进行更高层级的信息提取
             else:
+                # 先取出要使用的源特征图
                 if self.add_extra_convs == 'on_input':
-                    extra_source = inputs[self.backbone_end_level - 1]
+                    extra_source = inputs[self.backbone_end_level - 1]  # 第一种：使用 backbone 给出的 C特征图
                 elif self.add_extra_convs == 'on_lateral':
-                    extra_source = laterals[-1]
+                    extra_source = laterals[-1]   # 第二种： 使用横向连接的最后一层特征图
                 elif self.add_extra_convs == 'on_output':
-                    extra_source = outs[-1]
+                    extra_source = outs[-1]  # 第三种： 使用输出特征图的最后一层特征图
                 else:
                     raise NotImplementedError
+                # 依次使用fpn convs进行进一步的特征图处理。 说明fpn convs的数量要等于最终输出的特征图数量
                 outs.append(self.fpn_convs[used_backbone_levels](extra_source))
                 for i in range(used_backbone_levels + 1, self.num_outs):
+                    # 还可以指定是否要使用relu
                     if self.relu_before_extra_convs:
                         outs.append(self.fpn_convs[i](F.relu(outs[-1])))
                     else:
