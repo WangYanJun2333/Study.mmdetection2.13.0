@@ -67,14 +67,17 @@ class PAFPN(FPN):
             act_cfg,
             init_cfg=init_cfg)
         # add extra bottom up pathway
+        # 添加两个module list，用来存放网络层
+        # 其中downsample用来存放P2,P3,P4,P5等仅需后续P2-P5下采样时的卷积层
+        # 其中pafpn用来存放下采样后的过渡层
         self.downsample_convs = nn.ModuleList()
         self.pafpn_convs = nn.ModuleList()
         for i in range(self.start_level + 1, self.backbone_end_level):
             d_conv = ConvModule(
                 out_channels,
                 out_channels,
-                3,
-                stride=2,
+                3, # 3*3*256
+                stride=2, # 2倍下采样
                 padding=1,
                 conv_cfg=conv_cfg,
                 norm_cfg=norm_cfg,
@@ -83,8 +86,8 @@ class PAFPN(FPN):
             pafpn_conv = ConvModule(
                 out_channels,
                 out_channels,
-                3,
-                padding=1,
+                3, # 3*3*256
+                padding=1, # 维持不变
                 conv_cfg=conv_cfg,
                 norm_cfg=norm_cfg,
                 act_cfg=act_cfg,
@@ -98,12 +101,14 @@ class PAFPN(FPN):
         assert len(inputs) == len(self.in_channels)
 
         # build laterals
+        # 与FPN类似
         laterals = [
             lateral_conv(inputs[i + self.start_level])
             for i, lateral_conv in enumerate(self.lateral_convs)
         ]
 
         # build top-down path
+        # 与FPN类似
         used_backbone_levels = len(laterals)
         for i in range(used_backbone_levels - 1, 0, -1):
             prev_shape = laterals[i - 1].shape[2:]
@@ -112,16 +117,19 @@ class PAFPN(FPN):
 
         # build outputs
         # part 1: from original levels
+        # 与FPN类似
         inter_outs = [
             self.fpn_convs[i](laterals[i]) for i in range(used_backbone_levels)
         ]
 
         # part 2: add bottom-up path
+        # 开始使用pafpn的自底向上下采样卷积
         for i in range(0, used_backbone_levels - 1):
             inter_outs[i + 1] += self.downsample_convs[i](inter_outs[i])
 
         outs = []
-        outs.append(inter_outs[0])
+        outs.append(inter_outs[0]) # N2保持不变
+        # 自N3-N5开始，每一个使用一个3*3的过渡卷积，以消除特征相加的混叠效应
         outs.extend([
             self.pafpn_convs[i - 1](inter_outs[i])
             for i in range(1, used_backbone_levels)
