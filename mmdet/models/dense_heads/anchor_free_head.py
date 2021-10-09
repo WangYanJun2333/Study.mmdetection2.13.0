@@ -18,10 +18,20 @@ class AnchorFreeHead(BaseDenseHead, BBoxTestMixin):
     Args:
         num_classes (int): Number of categories excluding the background
             category.
+        num_classes: 除了背景以外的类别数量
+
         in_channels (int): Number of channels in the input feature map.
+        in_channels: 输入特征图的通道数量（默认为同一个值，因为经过了neck，如fpn，通道数量为256）
+
         feat_channels (int): Number of hidden channels. Used in child classes.
+        feat_channels: 在head模块的卷积层的通道数量
+
         stacked_convs (int): Number of stacking convs of the head.
+        stacked_convs: 在head模块处，卷积层的数量
+
         strides (tuple): Downsample factor of each feature map.
+        strides:
+
         dcn_on_last_conv (bool): If true, use dcn in the last layer of
             towers. Default: False.
         conv_bias (bool | str): If specified as `auto`, it will be decided by

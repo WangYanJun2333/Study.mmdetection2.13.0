@@ -18,6 +18,8 @@ class FCOSHead(AnchorFreeHead):
     The FCOS head does not use anchor boxes. Instead bounding boxes are
     predicted at each pixel and a centerness measure is used to suppress
     low-quality predictions.
+    FCOS是一个anchor-free的方法。其在每一个特征图的像素位置上预测候选框。并使用centerness来剔除低质量的预测框
+
     Here norm_on_bbox, centerness_on_reg, dcn_on_last_conv are training
     tricks used in official repo, which will bring remarkable mAP gains
     of up to 4.9. Please see https://github.com/tianzhi0549/FCOS for
@@ -26,9 +28,15 @@ class FCOSHead(AnchorFreeHead):
     Args:
         num_classes (int): Number of categories excluding the background
             category.
+        num_classes : 除背影以外的类别数量
+
         in_channels (int): Number of channels in the input feature map.
+        in_channels: 输入特征图的通道数（如果经过了neck，所以通道数是一致的，如256）
+
         strides (list[int] | list[tuple[int, int]]): Strides of points
             in multiple feature levels. Default: (4, 8, 16, 32, 64).
+        strides: 不同特征图的相对于原图的步长。可以是宽高不一致
+
         regress_ranges (tuple[tuple[int, int]]): Regress range of multiple
             level points.
         center_sampling (bool): If true, use center sampling. Default: False.
@@ -38,6 +46,8 @@ class FCOSHead(AnchorFreeHead):
         centerness_on_reg (bool): If true, position centerness on the
             regress branch. Please refer to https://github.com/tianzhi0549/FCOS/issues/89#issuecomment-516877042.
             Default: False.
+        centerness_on_reg： 如果为True，centerness模块在回归部分计算。（有更好的效果？？？）
+
         conv_bias (bool | str): If specified as `auto`, it will be decided by the
             norm_cfg. Bias of conv will be set as True if `norm_cfg` is None, otherwise
             False. Default: "auto".
@@ -104,7 +114,7 @@ class FCOSHead(AnchorFreeHead):
     def _init_layers(self):
         """Initialize layers of the head."""
         super()._init_layers()
-        self.conv_centerness = nn.Conv2d(self.feat_channels, 1, 3, padding=1)
+        self.conv_centerness = nn.Conv2d(self.feat_channels, 1, 3, padding=1) # kernel size=3, padding=1 stride=1， 最终的特征图尺寸不变
         self.scales = nn.ModuleList([Scale(1.0) for _ in self.strides])
 
     def forward(self, feats):
